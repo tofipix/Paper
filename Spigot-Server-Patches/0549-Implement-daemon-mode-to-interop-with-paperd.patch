@@ -54,57 +54,6 @@ index 0000000000000000000000000000000000000000..4cf198fccb1aab43930745288717fa9a
 +        closer.accept(this);
 +    }
 +}
-diff --git a/src/main/java/com/destroystokyo/paper/daemon/Data.java b/src/main/java/com/destroystokyo/paper/daemon/Data.java
-new file mode 100644
-index 0000000000000000000000000000000000000000..eb81cee4e9b1950af3590de17b960507ba8238b6
---- /dev/null
-+++ b/src/main/java/com/destroystokyo/paper/daemon/Data.java
-@@ -0,0 +1,28 @@
-+package com.destroystokyo.paper.daemon;
-+
-+/* package */ final class Data {
-+    /* package */ static final int MESSAGE_LENGTH = 100;
-+
-+    /* package */ final int responseChan;
-+    /* package */ final int responsePid;
-+    /* package */ final short messageType;
-+    /* package */ final byte messageLength;
-+    /* package */ final byte[] message;
-+
-+    /* package */ Data(
-+        final int responseChan,
-+        final int responsePid,
-+        final short messageType,
-+        final byte messageLength,
-+        final byte[] message
-+    ) {
-+        if (message.length != MESSAGE_LENGTH) {
-+            throw new IllegalArgumentException("message must be " + MESSAGE_LENGTH + " bytes long");
-+        }
-+        this.responseChan = responseChan;
-+        this.responsePid = responsePid;
-+        this.messageType = messageType;
-+        this.messageLength = messageLength;
-+        this.message = message;
-+    }
-+}
-diff --git a/src/main/java/com/destroystokyo/paper/daemon/MsgBuf.java b/src/main/java/com/destroystokyo/paper/daemon/MsgBuf.java
-new file mode 100644
-index 0000000000000000000000000000000000000000..1f4654ec42c4d22142cd11e984fdcc36ae9f91a8
---- /dev/null
-+++ b/src/main/java/com/destroystokyo/paper/daemon/MsgBuf.java
-@@ -0,0 +1,11 @@
-+package com.destroystokyo.paper.daemon;
-+
-+/* package */ final class MsgBuf {
-+    /* package */ final long mType;
-+    /* package */ final Data data;
-+
-+    /* package */ MsgBuf(final long mType, final Data data) {
-+        this.mType = mType;
-+        this.data = data;
-+    }
-+}
 diff --git a/src/main/java/com/destroystokyo/paper/daemon/NativeErrorException.java b/src/main/java/com/destroystokyo/paper/daemon/NativeErrorException.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..d5005d360e1f4eed2d8522e04a1cdd3e19a99a31
@@ -118,31 +67,34 @@ index 0000000000000000000000000000000000000000..d5005d360e1f4eed2d8522e04a1cdd3e
 +        super(errorMessage);
 +    }
 +}
-diff --git a/src/main/java/com/destroystokyo/paper/daemon/PaperDaemon.java b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemon.java
+diff --git a/src/main/java/com/destroystokyo/paper/daemon/NativeTimeoutException.java b/src/main/java/com/destroystokyo/paper/daemon/NativeTimeoutException.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa322709cb6f
+index 0000000000000000000000000000000000000000..75d4cd63ea50710a143b168df9fdc4282191cfa0
 --- /dev/null
-+++ b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemon.java
-@@ -0,0 +1,733 @@
++++ b/src/main/java/com/destroystokyo/paper/daemon/NativeTimeoutException.java
+@@ -0,0 +1,4 @@
 +package com.destroystokyo.paper.daemon;
 +
-+import com.google.common.io.ByteArrayDataOutput;
-+import com.google.common.io.ByteStreams;
++/* package */ final class NativeTimeoutException extends Exception {
++}
+diff --git a/src/main/java/com/destroystokyo/paper/daemon/PaperDaemon.java b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemon.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..4d4d350fde81f351e634b0942397bfa533de11e7
+--- /dev/null
++++ b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemon.java
+@@ -0,0 +1,575 @@
++package com.destroystokyo.paper.daemon;
++
++import com.google.common.util.concurrent.ThreadFactoryBuilder;
 +import com.google.gson.Gson;
-+import it.unimi.dsi.fastutil.ints.Int2IntArrayMap;
-+import it.unimi.dsi.fastutil.ints.Int2IntMap;
 +import it.unimi.dsi.fastutil.ints.Int2ObjectArrayMap;
-+import it.unimi.dsi.fastutil.ints.IntIterator;
-+import it.unimi.dsi.fastutil.objects.ObjectIterator;
-+import it.unimi.dsi.fastutil.shorts.Short2ObjectArrayMap;
++import it.unimi.dsi.fastutil.longs.Long2ObjectArrayMap;
 +import java.io.BufferedReader;
 +import java.io.IOException;
 +import java.io.InputStream;
 +import java.io.InputStreamReader;
 +import java.io.OutputStream;
 +import java.io.PrintStream;
-+import java.nio.channels.AsynchronousCloseException;
-+import java.nio.channels.spi.AbstractInterruptibleChannel;
 +import java.nio.charset.StandardCharsets;
 +import java.nio.file.Files;
 +import java.nio.file.Path;
@@ -150,6 +102,7 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +import java.util.Locale;
 +import java.util.concurrent.ExecutorService;
 +import java.util.concurrent.Executors;
++import java.util.concurrent.Future;
 +import java.util.concurrent.TimeUnit;
 +import java.util.function.Consumer;
 +import java.util.logging.Level;
@@ -160,19 +113,18 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +import org.bukkit.Bukkit;
 +import org.bukkit.craftbukkit.CraftServer;
 +
-+import static com.destroystokyo.paper.daemon.Data.MESSAGE_LENGTH;
-+
 +/**
 + * <a href="https://github.com/PaperMC/paperd">{@code paperd}</a> is a native binary utility which assists in running
-+ * the Paper server in the background, more reasonably like a daemon than simply backgrounding it in {@code screen} or
++ * the Paper server in the background, more like a daemon than simply backgrounding it in {@code screen} or
 + * {@code tmux}. {@code paperd} also provides a variety of tools for interfacing with and communicating with the server
-+ * when it's not in {@link #IS_DAEMON daemon mode}. The Paper side of the implementation for supporting this
-+ * communication is what this class does. Most of the time it is completely disconnected from the rest of the Minecraft
-+ * server, the message handling and cleanup code is running in 2 small threads that don't interact with Minecraft at all
-+ * except for handling commands from {@code paperd}.
++ * when it's in {@link #IS_DAEMON daemon mode}. The Paper side of the implementation for supporting this communication
++ * is what this class does. Most of the time it is completely disconnected from the rest of the Minecraft server, except
++ * for handling commands from {@code paperd}. The {@code paperd} code will call Bukkit APIs or access MC internals when
++ * needed to handle commands, but otherwise the rest of the code runs in separate threads from MC.
 + * <p/>
 + * This class represents all of the implementation specific to providing interoperability support with {@code paperd}.
-+ * Unix System V IPC message queues are used to receive messages from {@code paperd} and send responses back.
++ * Unix sockets are used to receive messages from {@code paperd} and send responses back through the
++ * {@link #SOCK_FILE paperd socket file}.
 + * <p/>
 + * Due both to this architecture decision and to the generally low demand of system admins running persistent Paper
 + * servers on anything other than Linux, Linux is the only supported system. macOS, being Unix as well, does also work
@@ -184,15 +136,10 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +public final class PaperDaemon {
 +
 +    /**
-+     * This is the default PID file name that {@code paperd} will look for. This <i>must</i> exist for daemon mode to be
-+     * enabled.
++     * This is the Unix socket file that {@code paperd} will use to communicate with this server.
 +     */
-+    private static final String PID_FILE = "paper.pid";
-+    /**
-+     * A "message type" is included in the call to create and send messages to an XSI Message Queue. This magic constant
-+     * is used both by {@code Paper} and {@code paperd}, they <i>must</i> match.
-+     */
-+    private static final long MESSAGE_TYPE = 0x7654;
++    private static final String SOCK_FILE = "paper.sock";
++
 +    /**
 +     * The return exit code to give to {@link System#exit(int) System.exit()} in order for {@code paperd} to
 +     * automatically restart the server. {@link #restartExitCode()} is used as a helper method to only return this value
@@ -216,57 +163,25 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +    private static final String PROTOCOL_VERSION_FILE = "/META-INF/io.papermc.paper.daemon.protocol";
 +
 +    /**
-+     * Bit mask for the final bit in {@link Data#messageLength}. When that bit is set to {@code 1}, that marks the end
-+     * of a message.
++     * This is the system property which {@code paperd} will set to enable daemon mode.
 +     */
-+    private static final byte MESSAGE_FIN_MASK = (byte) 0x80;
-+
-+    /**
-+     * Bit mask for the content of {@link Data#messageLength}. Since the first bit is only a flag marking if that part
-+     * of the message is the last part, we don't want to read it as part of the value.
-+     */
-+    private static final byte MESSAGE_CONTENT_MASK = (byte) 0x7F;
++    private static final String DAEMON_ENABLED_PROPERTY = "io.papermc.daemon.enabled";
 +
 +    private static final Gson gson = new Gson();
-+
-+    /**
-+     * Used to synchronize {@link #messageMap}.
-+     */
-+    private static final Object messageLock = new Object();
-+    /**
-+     * Used to synchronize {@link #channelMap}.
-+     */
-+    private static final Object channelLock = new Object();
-+
-+    /**
-+     * Stores data from message queue messages to build a full string through multiple messages. Kept as {@code null}
-+     * while not in use, and all accesses must be synchronized through {@link #messageLock}.
-+     * <p>
-+     * {@code key}: PID that is sending the messages
-+     * <br/>
-+     * {@code value}: Current message in construction
-+     */
-+    private static Int2ObjectArrayMap<ByteArrayDataOutput> messageMap = null;
-+    /**
-+     * Stores client channels associated with their PID. Will be checked periodically to make sure there aren't open
-+     * channels after their owning PID is gone, i.e. the {@code paperd} process crashed. Kept as {@code null} while
-+     * not in use, and all accesses must be synchronized through {@link #channelLock}.
-+     * <p>
-+     * {@code key}: PID that created the channel
-+     * {@code value}: The channel that was created
-+     */
-+    private static Int2IntArrayMap channelMap = null;
 +
 +    /**
 +     * Defines the mappings between messages type integers and their corresponding message classes. The message class
 +     * ({@link PaperDaemonMessage}) is also the handler for the message.
 +     */
-+    private static final Short2ObjectArrayMap<Class<? extends PaperDaemonMessage>> messageTypeMap;
++    private static final Long2ObjectArrayMap<Class<? extends PaperDaemonMessage>> messageTypeMap;
 +
 +    /* package */ static Thread messageThread = null;
-+    /* package */ static Thread cleanupThread = null;
 +
 +    /* package */ static ExecutorService messageSenderService = null;
++
++    private static ExecutorService messageResponseHandlerService = null;
++
++    /* package */ static Int2ObjectArrayMap<Future<?>> clientHandlers = null;
 +
 +    private static boolean initCalled = false;
 +
@@ -286,22 +201,23 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +    /* package */ static final int PROTOCOL_VERSION;
 +
 +    static {
-+        IS_DAEMON = Boolean.getBoolean("io.papermc.daemon.enabled");
++        IS_DAEMON = Boolean.getBoolean(DAEMON_ENABLED_PROPERTY);
 +        PROTOCOL_VERSION = findProtocolVersion();
 +
 +        // Don't take up this space if daemon mode isn't enabled
 +        if (IS_DAEMON) {
-+            messageTypeMap = new Short2ObjectArrayMap<>();
-+            messageTypeMap.put((short) 0, PaperDaemonMessage.ProtocolVersionMessage.class);
-+            messageTypeMap.put((short) 1, PaperDaemonMessage.StopMessage.class);
-+            messageTypeMap.put((short) 2, PaperDaemonMessage.RestartMessage.class);
-+            messageTypeMap.put((short) 3, PaperDaemonMessage.StatusMessage.class);
-+            messageTypeMap.put((short) 4, PaperDaemonMessage.SendCommandMessage.class);
-+            messageTypeMap.put((short) 5, PaperDaemonMessage.TimingsMessage.class);
-+            messageTypeMap.put((short) 6, PaperDaemonMessage.LogsMessage.class);
-+            messageTypeMap.put((short) 7, PaperDaemonMessage.EndLogsListenerMessage.class);
-+            messageTypeMap.put((short) 8, PaperDaemonMessage.ConsoleStatusMessage.class);
-+            messageTypeMap.put((short) 9, PaperDaemonMessage.TabCompleteMessage.class);
++            messageTypeMap = new Long2ObjectArrayMap<>();
++            messageTypeMap.put(0, PaperDaemonMessage.ProtocolVersionMessage.class);
++            messageTypeMap.put(1, PaperDaemonMessage.CloseConnectionMessage.class);
++            messageTypeMap.put(2, PaperDaemonMessage.StopMessage.class);
++            messageTypeMap.put(3, PaperDaemonMessage.RestartMessage.class);
++            messageTypeMap.put(4, PaperDaemonMessage.StatusMessage.class);
++            messageTypeMap.put(5, PaperDaemonMessage.SendCommandMessage.class);
++            messageTypeMap.put(6, PaperDaemonMessage.TimingsMessage.class);
++            messageTypeMap.put(7, PaperDaemonMessage.LogsMessage.class);
++            messageTypeMap.put(8, PaperDaemonMessage.EndLogsListenerMessage.class);
++            messageTypeMap.put(9, PaperDaemonMessage.ConsoleStatusMessage.class);
++            messageTypeMap.put(10, PaperDaemonMessage.TabCompleteMessage.class);
 +        } else {
 +            messageTypeMap = null;
 +        }
@@ -373,8 +289,8 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +     *   <li>{@code stdout} ({@link System#out}) will be closed</li>
 +     *   <li>{@code stderr} ({@link System#err}) will be closed</li>
 +     *   <li>{@code stdin} ({@link System#in}) will be closed</li>
-+     *   <li>A XSI Message Queue will be opened using the PID file {@code paper.pid} (this will allow
-+     *   {@code paperd} to communicate with the running server)</li>
++     *   <li>A Unix socket will be created at {@link #SOCK_FILE} (this will allow {@code paperd} to communicate with the
++     *       running server)</li>
 +     *   <li>This method will return {@code true}</li>
 +     * </ul>
 +     * <p>
@@ -404,22 +320,29 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +            return false;
 +        }
 +
-+        final Path pidFile = Paths.get(PID_FILE);
-+        if (!Files.exists(pidFile)) {
-+            System.out.println("ERROR: PID file not found: " + pidFile.toAbsolutePath());
-+            System.out.println("    Did you start this from paperd?");
++        final Path sockFile = Paths.get(SOCK_FILE);
++        if (Files.exists(sockFile)) {
++            System.out.println("ERROR: Socket file already exists: " + sockFile.toAbsolutePath());
++            System.out.println("    This file must not already exist in daemon mode.");
 +            System.out.println("    Stopping the server due to previous error.");
 +            System.exit(1);
-+            throw new InternalError();
 +        }
++
++        PaperDaemonJni.init();
 +
 +        System.setProperty(TerminalConsoleAppender.ANSI_OVERRIDE_PROPERTY, "true");
 +
-+        // Create message queue
-+        final int msqid = beginMessageLoop(pidFile);
-+        registerShutdownHook(msqid);
++        messageSenderService = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder()
++            .setNameFormat("paperd-Async-Message-Sender")
++            .build());
++        messageResponseHandlerService = Executors.newCachedThreadPool(new ThreadFactoryBuilder()
++            .setNameFormat("paperd-Message-Response-Handler-%d")
++            .build());
++        clientHandlers = new Int2ObjectArrayMap<>();
 +
-+        messageSenderService = Executors.newSingleThreadExecutor();
++        final int sock = createSocket(sockFile);
++        startListening(sock);
++        registerShutdownHook(sock, sockFile);
 +
 +        // When running as a daemon, we won't have stdout, stderr, and stdin
 +        // If we leave this around as normal then that will cause crashes elsewhere,
@@ -451,188 +374,160 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +    }
 +
 +    /**
-+     * Registers a {@link Runtime#addShutdownHook(Thread) shutdown hook} to remove the XSI Message Queue at
-+     * shutdown. Message queues are not cleaned up when all processes using it finish, they will hang around until
-+     * reboot if not cleaned up. We can't handle cases where the JVM is killed unexpectedly with {@code SIGKILL}, but
-+     * this will allow us to handle most other cases.
++     * Registers a {@link Runtime#addShutdownHook(Thread) shutdown hook} to clean up all of the {@code paperd} handler
++     * resources at shutdown. This will stop all handler threads and shutdown all executors before finally closing the
++     * socket. Unix sockets are cleaned up after the process which owns it ends, so it's not a big deal if we are killed
++     * and don't get a chance to do this, but it's still good practice.
 +     *
-+     * @param msqid The queue id to remove.
++     * @param sock The socket to close
 +     */
-+    private static void registerShutdownHook(final int msqid) {
++    private static void registerShutdownHook(final int sock, final Path sockFile) {
 +        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-+            // Tell the message queue loop it should quit
++            // Finish processing any current messages and stop accepting new messages
++            messageResponseHandlerService.shutdown();
++
++            // Tell the message receiver loop it should quit
 +            final Thread mThread = messageThread;
 +            if (mThread != null) {
 +                mThread.interrupt();
-+            }
-+
-+            final Thread cThread = cleanupThread;
-+            if (cThread != null) {
-+                cThread.interrupt();
-+            }
-+
-+            // if messageThread is still active then give it a little more time to complete
-+            if (mThread != null) {
 +                try {
-+                    mThread.join(TimeUnit.SECONDS.toMillis(1));
++                    mThread.join(TimeUnit.SECONDS.toMillis(3));
 +                } catch (final InterruptedException ignored) {
 +                }
 +            }
 +
++            // Wait for any message handlers to finish processing
 +            try {
-+                PaperDaemonJni.deleteQueue(msqid);
++                if (!messageResponseHandlerService.awaitTermination(3, TimeUnit.SECONDS)) {
++                    messageResponseHandlerService.shutdownNow();
++                }
++            } catch (final InterruptedException ignored) {
++            }
++
++            // Shut this down last in case any of the messages needed to use it
++            messageSenderService.shutdown();
++
++            // This part isn't strictly necessary, the OS will clean up after the process closes anyways
++            // We just do this to be proper
++            Throwable baseThrown = null;
++            try {
++                PaperDaemonJni.closeSocket(sock);
 +            } catch (final NativeErrorException e) {
-+                throw new PaperDaemonException("Failed to delete IPC message queue", e);
++                baseThrown = new PaperDaemonException("Failed to close paperd socket", e);
++            } catch (final Throwable t) {
++                baseThrown = t;
++            }
++            try {
++                Files.delete(sockFile);
++            } catch (final IOException e) {
++                final Throwable current = new PaperDaemonException("Failed to delete socket file", e);
++                if (baseThrown != null) {
++                    baseThrown.addSuppressed(current);
++                } else {
++                    baseThrown = current;
++                }
++            }
++            if (baseThrown != null) {
++                if (baseThrown instanceof RuntimeException) {
++                    throw (RuntimeException) baseThrown;
++                } else {
++                    throw (Error) baseThrown;
++                }
 +            }
 +        }));
 +    }
 +
 +    /**
-+     * Begins listening and responding to XSI Message Queue messages. This method will loop forever in a
-+     * separate {@link Thread#setDaemon(boolean) daemon} thread.
-+     * <p>
-+     * The message queue will be attempted to be closed in the {@link Runtime#addShutdownHook(Thread) shutdown hook}
-+     * added by the {@link #registerShutdownHook(int) registerShutdownHook}, this method cannot cleanup after itself.
-+     * Because of this, {@link #registerShutdownHook(int) registerShutdownHook} must be called after this method with
-+     * the return value of this method as input.
++     * Create a new socket for communication with {@code paperd} at the given file. Throws a runtime exception on
++     * failure to cause init to fail if something goes wrong.
 +     *
-+     * @return The msqid of the created queue.
++     * @param sockFile The file to create the socket as.
++     * @return The socket id {@code int} that was created.
 +     */
-+    private static int beginMessageLoop(final Path pidFile) {
-+        final int msqid;
++    private static int createSocket(final Path sockFile) {
 +        try {
-+            msqid = PaperDaemonJni.createQueue(pidFile);
++            return PaperDaemonJni.createSocket(sockFile);
 +        } catch (final NativeErrorException e) {
-+            throw new PaperDaemonException("Failed to get or create IPC message queue", e);
-+        }
-+
-+        messageThread = new Thread(() -> {
-+            while (!Thread.interrupted()) {
-+                try {
-+                    doMessageLoop(msqid);
-+                } catch (final InterruptedException ignored) {
-+                    break;
-+                } catch (final Throwable t) {
-+                    log(logger -> logger.log(Level.SEVERE, "Unhandled exception in IPC Message thread", t));
-+                }
-+            }
-+        });
-+        messageThread.setDaemon(true);
-+        messageThread.setName("Message Queue Thread");
-+        messageThread.start();
-+
-+        cleanupThread = new Thread(() -> {
-+            while (!Thread.interrupted()) {
-+                try {
-+                    cleanupBuffers();
-+                    //noinspection BusyWait
-+                    Thread.sleep(TimeUnit.SECONDS.toMillis(10));
-+                } catch (final InterruptedException e) {
-+                    break;
-+                } catch (final Throwable t) {
-+                    log(logger -> logger.log(Level.SEVERE, "Unhandled exception in IPC Buffer cleanup thread", t));
-+                }
-+            }
-+        });
-+        cleanupThread.setDaemon(true);
-+        cleanupThread.setName("Message Queue Buffer Cleanup Thread");
-+        cleanupThread.start();
-+
-+        return msqid;
-+    }
-+
-+    /* package */ static final class InterruptibleMessageCall extends AbstractInterruptibleChannel {
-+        private final int msqid;
-+
-+        /* package */ InterruptibleMessageCall(final int msqid) {
-+            this.msqid = msqid;
-+        }
-+
-+        /* package */ MsgBuf doCall() throws NativeErrorException, InterruptedException {
-+            try {
-+                begin();
-+                final MsgBuf buf = PaperDaemonJni.receiveMessage(msqid);
-+                if (buf.data.messageType == Short.MAX_VALUE) {
-+                    throw new InterruptedException();
-+                }
-+                return buf;
-+            } finally {
-+                try {
-+                    end(true);
-+                } catch (final AsynchronousCloseException ignored) {
-+                }
-+            }
-+        }
-+
-+        @Override
-+        protected void implCloseChannel() {
-+            // Our way of "cancelling" a call is to give msgrcv something to return
-+            final MsgBuf buf = new MsgBuf(
-+                Short.MAX_VALUE,
-+                new Data(0, 0, (short) 0, (byte) 0, new byte[100])
-+            );
-+            try {
-+                PaperDaemonJni.sendMessage(msqid, buf);
-+            } catch (final NativeErrorException e) {
-+                log(logger -> logger.log(Level.WARNING, "Exception while sending stop message", e));
-+            }
++            throw new PaperDaemonException("Failed to create socket for daemon mode at " + sockFile.toAbsolutePath(), e);
 +        }
 +    }
 +
 +    /**
-+     * Executes a single iteration of the message loop handler thread. This should be called in an infinite loop inside
-+     * a {@link Thread#setDaemon(boolean) daemon thread}.
-+     *
-+     * @param msqid The message queue id to use to listen for messages.
++     * Begins listening and responding to socket messages. This method will loop forever in a separate
++     * {@link Thread#setDaemon(boolean) daemon} thread.
 +     */
-+    /* package */ static void doMessageLoop(final int msqid) throws InterruptedException {
-+        final MsgBuf buf;
++    private static void startListening(final int sock) {
++        messageThread = new Thread(() -> {
++            while (!Thread.interrupted()) {
++                try {
++                    doMessageReceive(sock);
++                } catch (final Throwable t) {
++                    log(logger -> logger.log(Level.SEVERE, "Unhandled exception in paperd message receiver", t));
++                }
++            }
++        });
++        messageThread.setDaemon(true);
++        messageThread.setName("paperd-Message-Receiver");
++        messageThread.start();
++    }
 +
++    /**
++     * Executes a single iteration of the {@link #startListening(int)} thread.
++     *
++     * @param sock The socket id to use to listen for messages.
++     */
++    /* package */ static void doMessageReceive(final int sock) {
++        final int clientSock;
 +        try {
-+            buf = new InterruptibleMessageCall(msqid).doCall();
++            clientSock = PaperDaemonJni.acceptConnection(sock);
++        } catch (final NativeTimeoutException e) {
++            return;
 +        } catch (final NativeErrorException e) {
-+            log(logger -> logger.log(Level.WARNING, "Failed to read from message queue", e));
++            log(logger -> logger.log(Level.WARNING, "Failed to accept message from socket", e));
 +            return;
 +        }
 +
-+        final boolean isFin = (buf.data.messageLength & MESSAGE_FIN_MASK) == MESSAGE_FIN_MASK;
-+        final int length = buf.data.messageLength & MESSAGE_CONTENT_MASK;
++        clientHandlers.put(clientSock, messageResponseHandlerService.submit(new MessageHandler(clientSock)));
++    }
 +
-+        final ByteArrayDataOutput buffer;
-+        synchronized (messageLock) {
-+            if (messageMap == null) {
-+                messageMap = new Int2ObjectArrayMap<>();
-+            }
-+            //noinspection UnstableApiUsage
-+            buffer = messageMap.computeIfAbsent(buf.data.responsePid, i -> ByteStreams.newDataOutput());
-+        }
-+        buffer.write(buf.data.message, 0, length);
++    /* package */ static final class MessageHandler implements Runnable {
++        private final int clientSock;
 +
-+        if (buf.data.responseChan != -1) {
-+            synchronized (channelLock) {
-+                if (channelMap == null) {
-+                    channelMap = new Int2IntArrayMap();
-+                }
-+                channelMap.put(buf.data.responsePid, buf.data.responseChan);
-+            }
++        /* package */ MessageHandler(final int clientSock) {
++            this.clientSock = clientSock;
 +        }
 +
-+        if (isFin) {
-+            final String message = new String(buffer.toByteArray(), StandardCharsets.UTF_8);
-+            handleMessage(buf.data.messageType, message, buf.data.responseChan);
++        @Override
++        public void run() {
++            try {
++                while (true) {
++                    final PaperDaemonMessageBuffer buffer;
++                    try {
++                        buffer = PaperDaemonJni.receiveMessage(clientSock);
++                    } catch (final NativeTimeoutException e) {
++                        continue;
++                    } catch (final NativeErrorException e) {
++                        log(logger -> logger.log(Level.WARNING, "Error ", e));
++                        break;
++                    }
 +
-+            synchronized (messageLock) {
-+                if (messageMap != null) {
-+                    messageMap.remove(buf.data.responsePid);
-+                    if (messageMap.isEmpty()) {
-+                        messageMap = null;
++                    if (buffer == null || Thread.currentThread().isInterrupted()) {
++                        break;
++                    }
++
++                    handleMessage(buffer.messageType, buffer.messageData, clientSock);
++
++                    if (Thread.currentThread().isInterrupted()) {
++                        break;
 +                    }
 +                }
++            } finally {
++                PaperDaemon.clientHandlers.remove(clientSock);
 +            }
 +        }
 +    }
 +
-+    private static void handleMessage(final short messageType, final String message, final int responseChan) {
++    /* package */ static void handleMessage(final long messageType, final String message, final int clientSock) {
 +        final Class<? extends PaperDaemonMessage> clazz = messageTypeMap.get(messageType);
 +        if (clazz == null) {
 +            log(logger -> logger.warning("Unknown message type: " + messageType));
@@ -642,111 +537,39 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +        try {
 +            handler = gson.fromJson(message, clazz);
 +        } catch (final Throwable t) {
-+            log(logger -> logger.log(Level.SEVERE, "Failed to parse IPC Message: " + message, t));
++            log(logger -> logger.log(Level.SEVERE, "Failed to parse paperd message: " + message, t));
 +            return;
 +        }
 +        try {
-+            handler.execute(responseChan);
++            handler.execute(clientSock);
 +        } catch (final Throwable t) {
-+            log(logger -> logger.log(Level.SEVERE, "Exception thrown in IPC Message Handler: " + clazz.getName(), t));
++            log(logger -> logger.log(Level.SEVERE, "Exception thrown in paperd message handler: " + clazz.getName(), t));
 +        }
 +    }
 +
-+    /**
-+     * Check each {@code PID} in {@link #messageMap} and {@link #channelMap} and make sure each process is still alive.
-+     * Remove any buffers corresponding with a non-existent PID. This effectively prevents memory leaks from holding
-+     * onto buffers for processes which will never complete.
-+     */
-+    /* package */ static void cleanupBuffers() {
-+        messages:
-+        synchronized (messageLock) {
-+            if (messageMap == null) {
-+                break messages;
-+            }
-+
-+            final IntIterator iter = messageMap.keySet().iterator();
-+            while (iter.hasNext()) {
-+                final int pid = iter.nextInt();
-+                if (!checkExists(pid)) {
-+                    iter.remove();
-+                }
-+            }
-+
-+            if (messageMap.isEmpty()) {
-+                messageMap = null;
-+            }
-+        }
-+
-+        channels:
-+        synchronized (channelLock) {
-+            if (channelMap == null) {
-+                break channels;
-+            }
-+
-+            final ObjectIterator<Int2IntMap.Entry> iter = channelMap.int2IntEntrySet().fastIterator();
-+            while (iter.hasNext()) {
-+                final Int2IntMap.Entry entry = iter.next();
-+
-+                final int pid = entry.getIntKey();
-+                if (checkExists(pid)) {
-+                    continue;
-+                }
-+                iter.remove();
-+
-+                try {
-+                    PaperDaemonJni.deleteQueue(entry.getIntValue());
-+                } catch (final NativeErrorException ignored) {
-+                }
-+            }
-+
-+            if (channelMap.isEmpty()) {
-+                channelMap = null;
-+            }
-+        }
-+    }
-+
-+    private static boolean checkExists(final int pid) {
-+        try {
-+            return PaperDaemonJni.pidExists(pid);
-+        } catch (final NativeErrorException e) {
-+            log(logger -> logger.log(Level.WARNING, "Failed to check PID " + pid, e));
-+            return false;
-+        }
-+    }
-+
-+    /* package */ static void sendMessageAsync(final int channel, final Object data) {
++    /* package */ static void sendMessageAsync(final int clientSock, final Object data) {
 +        final ExecutorService executorService = PaperDaemon.messageSenderService;
 +        if (executorService == null) {
 +            return;
 +        }
-+        executorService.execute(() -> sendMessage(channel, data));
++        executorService.execute(() -> sendMessage(clientSock, data));
 +    }
 +
-+    /* package */ static void sendMessage(final int channel, final Object data) {
-+        sendMessage(channel, data, true);
++    /* package */ static void sendMessage(final int clientSock, final Object data) {
++        sendMessage(clientSock, data, true);
 +    }
 +
-+    /* package */ static boolean sendMessage(final int channel, final Object data, final boolean logError) {
++    /* package */ static boolean sendMessage(final int clientSock, final Object data, final boolean logError) {
 +        checkMainThread();
 +
 +        final String json = gson.toJson(data);
-+
-+        final byte[] rawData = json.getBytes(StandardCharsets.UTF_8);
-+
-+        int index = 0;
-+        while (index < rawData.length) {
-+            final int size = Math.min(rawData.length - index, MESSAGE_LENGTH);
-+
-+            try {
-+                sendPagedMessage(channel, rawData, index, size, index + size == rawData.length);
-+            } catch (final NativeErrorException e) {
-+                if (logError) {
-+                    log(logger -> logger.log(Level.WARNING, "Failed to send to message queue", e));
-+                }
-+                return false;
++        try {
++            PaperDaemonJni.sendMessage(clientSock, new PaperDaemonMessageBuffer(0, json));
++        } catch (final NativeErrorException e) {
++            if (logError) {
++                log(logger -> logger.log(Level.WARNING, "Failed to send message to paperd ", e));
 +            }
-+
-+            index += size;
++            return false;
 +        }
 +
 +        return true;
@@ -758,30 +581,8 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +            return;
 +        }
 +        if (server.console.isMainThread()) {
-+            server.getLogger().log(Level.WARNING, "IPC message sent on main thread", new Throwable());
++            server.getLogger().log(Level.WARNING, "paperd message sent on main thread", new Throwable());
 +        }
-+    }
-+
-+    private static void sendPagedMessage(
-+        final int channel,
-+        final byte[] data,
-+        final int index,
-+        final int length,
-+        final boolean isFin
-+    ) throws NativeErrorException {
-+        final byte[] msgDat = new byte[MESSAGE_LENGTH];
-+        System.arraycopy(data, index, msgDat, 0, length);
-+        byte msgLen = (byte) length;
-+        if (isFin) {
-+            msgLen |= MESSAGE_FIN_MASK;
-+        }
-+
-+        final MsgBuf buf = new MsgBuf(
-+            MESSAGE_TYPE,
-+            new Data(0, 0, (short) 0, msgLen, msgDat)
-+        );
-+
-+        PaperDaemonJni.sendMessage(channel, buf);
 +    }
 +
 +    /* package */ static final class ServerErrorMessage {
@@ -859,16 +660,15 @@ index 0000000000000000000000000000000000000000..5bdc09dc7d30684064352510724eaa32
 +}
 diff --git a/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonAppender.java b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonAppender.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..085ff7640d065f3a5eb32fe7d1955e54aee8a060
+index 0000000000000000000000000000000000000000..add8445f3017d17fef2472247076da83d409be2b
 --- /dev/null
 +++ b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonAppender.java
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,95 @@
 +package com.destroystokyo.paper.daemon;
 +
 +import com.google.common.collect.EvictingQueue;
 +import java.io.Serializable;
 +import java.util.ArrayList;
-+import java.util.concurrent.SynchronousQueue;
 +import net.minecrell.terminalconsole.TerminalConsoleAppender;
 +import org.apache.logging.log4j.core.Appender;
 +import org.apache.logging.log4j.core.Core;
@@ -978,10 +778,10 @@ index 0000000000000000000000000000000000000000..e10b1e46221d26e256eab9e0f9e5af28
 +}
 diff --git a/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonJni.java b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonJni.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..5170d4d22ac633507bb71556075a4b809fcabdb6
+index 0000000000000000000000000000000000000000..76b144255d469989fb37839f4bc42259dad4c797
 --- /dev/null
 +++ b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonJni.java
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,98 @@
 +package com.destroystokyo.paper.daemon;
 +
 +import java.io.IOException;
@@ -1064,22 +864,28 @@ index 0000000000000000000000000000000000000000..5170d4d22ac633507bb71556075a4b80
 +    private PaperDaemonJni() {
 +    }
 +
-+    /* package */ static native int createQueue(final Path pidFile) throws NativeErrorException;
++    /**
++     * This is a dummy method to call to explicitly cause the {@code <clinit>} method to run to initialize the JNI part
++     * of {@code paperd}.
++     */
++    /* package */ static void init () {}
 +
-+    /* package */ static native void sendMessage(final int queueId, final MsgBuf message) throws NativeErrorException;
++    /* package */ static native int createSocket(final Path sockFile) throws NativeErrorException;
 +
-+    /* package */ static native MsgBuf receiveMessage(final int queueId) throws NativeErrorException;
++    /* package */ static native int acceptConnection(final int sock) throws NativeErrorException, NativeTimeoutException;
 +
-+    /* package */ static native void deleteQueue(final int queueId) throws NativeErrorException;
++    /* package */ static native PaperDaemonMessageBuffer receiveMessage(final int clientSock) throws NativeErrorException, NativeTimeoutException;
 +
-+    /* package */ static native boolean pidExists(final int pid) throws NativeErrorException;
++    /* package */ static native void sendMessage(final int clientSock, final PaperDaemonMessageBuffer message) throws NativeErrorException;
++
++    /* package */ static native void closeSocket(final int sock) throws NativeErrorException;
 +}
 diff --git a/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonMessage.java b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonMessage.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4ba6dcfc1
+index 0000000000000000000000000000000000000000..388affa78661e0304e40c0b099be4390a3567b23
 --- /dev/null
 +++ b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonMessage.java
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,456 @@
 +package com.destroystokyo.paper.daemon;
 +
 +import co.aikar.timings.SimpleTimingsReportListener;
@@ -1087,6 +893,7 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +import it.unimi.dsi.fastutil.ints.Int2ObjectArrayMap;
 +import java.text.DecimalFormat;
 +import java.util.List;
++import java.util.concurrent.Future;
 +import java.util.concurrent.atomic.AtomicInteger;
 +import java.util.stream.Collectors;
 +import javax.annotation.Nonnull;
@@ -1098,7 +905,7 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +import org.spigotmc.RestartCommand;
 +
 +/* package */ interface PaperDaemonMessage {
-+    /* package */ void execute(final int responseChan);
++    /* package */ void execute(final int clientSock);
 +
 +    /**
 +     * This message tells {@code paperd} the version of the communication protocol this server implements. In the case
@@ -1108,8 +915,8 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +     */
 +    /* package */ final class ProtocolVersionMessage implements PaperDaemonMessage {
 +        @Override
-+        public void execute(final int responseChan) {
-+            PaperDaemon.sendMessage(responseChan, new ProtocolVersionMessageResponse(PaperDaemon.PROTOCOL_VERSION));
++        public void execute(final int clientSock) {
++            PaperDaemon.sendMessage(clientSock, new ProtocolVersionMessageResponse(PaperDaemon.PROTOCOL_VERSION));
 +        }
 +
 +        /* package */ final static class ProtocolVersionMessageResponse {
@@ -1121,15 +928,29 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +        }
 +    }
 +
++    /* package */ final class CloseConnectionMessage implements PaperDaemonMessage {
++        @Override
++        public void execute(final int clientSock) {
++            final Int2ObjectArrayMap<Future<?>> handlers = PaperDaemon.clientHandlers;
++            if (handlers == null) {
++                return;
++            }
++            final Future<?> handler = handlers.remove(clientSock);
++            if (handler != null) {
++                handler.cancel(true);
++            }
++        }
++    }
++
 +    /**
 +     * Stops the server gracefully.
 +     */
 +    /* package */ final class StopMessage implements PaperDaemonMessage {
 +        @Override
-+        public void execute(final int responseChan) {
++        public void execute(final int clientSock) {
 +            final DedicatedServer server = PaperDaemon.getConsole();
 +            if (server == null) {
-+                PaperDaemon.serverNotReadyYet(responseChan);
++                PaperDaemon.serverNotReadyYet(clientSock);
 +                return;
 +            }
 +            PaperDaemon.log(logger -> logger.info("Shutdown command received from paperd"));
@@ -1144,10 +965,10 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +        /* package */ String message;
 +
 +        @Override
-+        public void execute(final int responseChan) {
++        public void execute(final int clientSock) {
 +            final DedicatedServer server = PaperDaemon.getConsole();
 +            if (server == null) {
-+                PaperDaemon.serverNotReadyYet(responseChan);
++                PaperDaemon.serverNotReadyYet(clientSock);
 +                return;
 +            }
 +            PaperDaemon.log(logger -> logger.info("Command received from paperd: " + message));
@@ -1179,10 +1000,10 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +     */
 +    /* package */ final class StatusMessage implements PaperDaemonMessage {
 +        @Override
-+        public void execute(final int responseChan) {
++        public void execute(final int clientSock) {
 +            final DedicatedServer server = PaperDaemon.getConsole();
 +            if (server == null) {
-+                PaperDaemon.serverNotReadyYet(responseChan);
++                PaperDaemon.serverNotReadyYet(clientSock);
 +                return;
 +            }
 +            server.scheduleOnMain(() -> {
@@ -1223,7 +1044,7 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +                final long maxMem = Runtime.getRuntime().maxMemory();
 +
 +
-+                PaperDaemon.sendMessageAsync(responseChan, new StatusMessage.StatusMessageResponse(
++                PaperDaemon.sendMessageAsync(clientSock, new StatusMessage.StatusMessageResponse(
 +                    motd, serverName, serverVersion, apiVersion, players, worlds,
 +                    new StatusMessage.TpsStatus(tps),
 +                    new StatusMessage.MemoryStatus(freeMem, currentMem, maxMem)
@@ -1318,10 +1139,10 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +     */
 +    /* package */ final class RestartMessage implements PaperDaemonMessage {
 +        @Override
-+        public void execute(final int responseChan) {
++        public void execute(final int clientSock) {
 +            final DedicatedServer server = PaperDaemon.getConsole();
 +            if (server == null) {
-+                PaperDaemon.serverNotReadyYet(responseChan);
++                PaperDaemon.serverNotReadyYet(clientSock);
 +                return;
 +            }
 +            PaperDaemon.log(logger -> logger.info("Restart command received from paperd"));
@@ -1334,10 +1155,10 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +     */
 +    /* package */ final class TimingsMessage implements PaperDaemonMessage {
 +        @Override
-+        public void execute(final int responseChan) {
++        public void execute(final int clientSock) {
 +            final DedicatedServer server = PaperDaemon.getConsole();
 +            if (server == null) {
-+                PaperDaemon.serverNotReadyYet(responseChan);
++                PaperDaemon.serverNotReadyYet(clientSock);
 +                return;
 +            }
 +
@@ -1345,7 +1166,7 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +            server.scheduleOnMain(() -> {
 +                if (!Timings.isTimingsEnabled()) {
 +                    PaperDaemon.sendMessageAsync(
-+                        responseChan,
++                        clientSock,
 +                        new TimingsMessage.TimingsMessageResponse("Timings is not enabled")
 +                    );
 +                    return;
@@ -1354,12 +1175,12 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +                Timings.generateReport(new SimpleTimingsReportListener() {
 +                    @Override
 +                    public void sendMessage(@Nonnull final String message) {
-+                        PaperDaemon.sendMessageAsync(responseChan, new TimingsMessage.TimingsMessageResponse(message));
++                        PaperDaemon.sendMessageAsync(clientSock, new TimingsMessage.TimingsMessageResponse(message));
 +                    }
 +
 +                    @Override
 +                    public void done() {
-+                        PaperDaemon.sendMessageAsync(responseChan, new TimingsMessage.TimingsMessageResponse());
++                        PaperDaemon.sendMessageAsync(clientSock, new TimingsMessage.TimingsMessageResponse());
 +                    }
 +                });
 +            });
@@ -1388,10 +1209,10 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +        private transient final AtomicInteger counter = new AtomicInteger(0);
 +
 +        @Override
-+        public void execute(final int responseChan) {
++        public void execute(final int clientSock) {
 +            final PaperDaemonAppender appender = PaperDaemonAppender.instance;
 +            if (appender == null) {
-+                PaperDaemon.serverNotReadyYet(responseChan);
++                PaperDaemon.serverNotReadyYet(clientSock);
 +                return;
 +            }
 +
@@ -1408,7 +1229,7 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +                            continue;
 +                        }
 +
-+                        if (!PaperDaemon.sendMessage(responseChan, new LogsMessageResponse(nextMessage), false)) {
++                        if (!PaperDaemon.sendMessage(clientSock, new LogsMessageResponse(nextMessage), false)) {
 +                            break;
 +                        }
 +                    }
@@ -1416,14 +1237,14 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +                    counter.decrementAndGet();
 +                    synchronized (responseThreadsLock) {
 +                        if (responseThreads != null) {
-+                            responseThreads.remove(responseChan);
++                            responseThreads.remove(clientSock);
 +                            if (responseThreads.isEmpty()) {
 +                                responseThreads = null;
 +                            }
 +                        }
 +                    }
 +                }
-+            }, "Paperd Console Thread " + counter.incrementAndGet());
++            }, "paperd-Console-" + counter.incrementAndGet());
 +            t.setDaemon(true);
 +            t.start();
 +
@@ -1431,7 +1252,7 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +                if (responseThreads == null) {
 +                    responseThreads = new Int2ObjectArrayMap<>();
 +                }
-+                responseThreads.put(responseChan, t);
++                responseThreads.put(clientSock, t);
 +            }
 +        }
 +
@@ -1448,7 +1269,7 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +        /* package */ int channel;
 +
 +        @Override
-+        public void execute(final int responseChan) {
++        public void execute(final int clientSock) {
 +            synchronized (LogsMessage.responseThreadsLock) {
 +                if (LogsMessage.responseThreads == null) {
 +                    return;
@@ -1466,10 +1287,10 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +
 +    /* package */ final class ConsoleStatusMessage implements PaperDaemonMessage {
 +        @Override
-+        public void execute(int responseChan) {
++        public void execute(int clientSock) {
 +            final DedicatedServer server = PaperDaemon.getConsole();
 +            if (server == null) {
-+                PaperDaemon.serverNotReadyYet(responseChan);
++                PaperDaemon.serverNotReadyYet(clientSock);
 +                return;
 +            }
 +
@@ -1478,7 +1299,7 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +            final int maxPlayers = Bukkit.getMaxPlayers();
 +            final double tps = Bukkit.getTPS()[0];
 +
-+            PaperDaemon.sendMessage(responseChan, new ConsoleStatusResponse(serverName, players, maxPlayers, tps));
++            PaperDaemon.sendMessage(clientSock, new ConsoleStatusResponse(serverName, players, maxPlayers, tps));
 +        }
 +
 +        /* package */ final static class ConsoleStatusResponse {
@@ -1500,16 +1321,16 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +        /* package */ String command;
 +
 +        @Override
-+        public void execute(final int responseChan) {
++        public void execute(final int clientSock) {
 +            final DedicatedServer server = PaperDaemon.getConsole();
 +            if (server == null) {
-+                PaperDaemon.serverNotReadyYet(responseChan);
++                PaperDaemon.serverNotReadyYet(clientSock);
 +                return;
 +            }
 +
 +            final List<String> suggestions = ConsoleCommandCompleter.complete(command, server);
 +            final TabCompleteMessageResponse response = new TabCompleteMessageResponse(suggestions);
-+            PaperDaemon.sendMessage(responseChan, response);
++            PaperDaemon.sendMessage(clientSock, response);
 +        }
 +
 +        /* package */ final static class TabCompleteMessageResponse {
@@ -1519,6 +1340,25 @@ index 0000000000000000000000000000000000000000..ad9c2356fb5b4f7b316ad8ca5389f2f4
 +                this.suggestions = suggestions;
 +            }
 +        }
++    }
++}
+diff --git a/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonMessageBuffer.java b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonMessageBuffer.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..3c88bffdc75f107ccf3b72cb9e17c2217f95a5e1
+--- /dev/null
++++ b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonMessageBuffer.java
+@@ -0,0 +1,13 @@
++package com.destroystokyo.paper.daemon;
++
++/* package */ final class PaperDaemonMessageBuffer {
++
++    /* package */ final long messageType;
++
++    /* package */ final String messageData;
++
++    /* package */ PaperDaemonMessageBuffer(final long messageType, final String messageData) {
++        this.messageType = messageType;
++        this.messageData = messageData;
 +    }
 +}
 diff --git a/src/main/java/net/minecraft/server/DedicatedServer.java b/src/main/java/net/minecraft/server/DedicatedServer.java
