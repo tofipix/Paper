@@ -67,6 +67,16 @@ index 0000000000000000000000000000000000000000..d5005d360e1f4eed2d8522e04a1cdd3e
 +        super(errorMessage);
 +    }
 +}
+diff --git a/src/main/java/com/destroystokyo/paper/daemon/NativeSocketClosedException.java b/src/main/java/com/destroystokyo/paper/daemon/NativeSocketClosedException.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..023a0835dbdd2105fce53c3bc8b1149ac30907ab
+--- /dev/null
++++ b/src/main/java/com/destroystokyo/paper/daemon/NativeSocketClosedException.java
+@@ -0,0 +1,4 @@
++package com.destroystokyo.paper.daemon;
++
++/* package */ final class NativeSocketClosedException extends Exception {
++}
 diff --git a/src/main/java/com/destroystokyo/paper/daemon/NativeTimeoutException.java b/src/main/java/com/destroystokyo/paper/daemon/NativeTimeoutException.java
 new file mode 100644
 index 0000000000000000000000000000000000000000..75d4cd63ea50710a143b168df9fdc4282191cfa0
@@ -79,15 +89,17 @@ index 0000000000000000000000000000000000000000..75d4cd63ea50710a143b168df9fdc428
 +}
 diff --git a/src/main/java/com/destroystokyo/paper/daemon/PaperDaemon.java b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemon.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..9a816a65719e15625621d4789841490f65b62b80
+index 0000000000000000000000000000000000000000..ae5fb3d7317091a3787a24e0cf9f98fae5cb09d4
 --- /dev/null
 +++ b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemon.java
-@@ -0,0 +1,584 @@
+@@ -0,0 +1,621 @@
 +package com.destroystokyo.paper.daemon;
 +
 +import com.google.common.util.concurrent.ThreadFactoryBuilder;
 +import com.google.gson.Gson;
++import it.unimi.dsi.fastutil.ints.Int2ObjectArrayMap;
 +import it.unimi.dsi.fastutil.longs.Long2ObjectArrayMap;
++import it.unimi.dsi.fastutil.objects.ObjectIterator;
 +import java.io.BufferedReader;
 +import java.io.IOException;
 +import java.io.InputStream;
@@ -171,13 +183,24 @@ index 0000000000000000000000000000000000000000..9a816a65719e15625621d4789841490f
 +     * Defines the mappings between messages type integers and their corresponding message classes. The message class
 +     * ({@link PaperDaemonMessage}) is also the handler for the message.
 +     */
-+    private static final Long2ObjectArrayMap<Class<? extends PaperDaemonMessage>> messageTypeMap;
++    private static final @Nullable Long2ObjectArrayMap<Class<? extends PaperDaemonMessage>> messageTypeMap;
 +
-+    /* package */ static Thread messageThread = null;
++    /* package */ static @Nullable Thread messageThread = null;
 +
-+    /* package */ static ExecutorService messageSenderService = null;
++    /* package */ static @Nullable ExecutorService messageSenderService = null;
 +
-+    private static ExecutorService messageResponseHandlerService = null;
++    private static @Nullable ExecutorService messageResponseHandlerService = null;
++
++    /**
++     * If we are in {@link #IS_DAEMON daemon mode} this will be set to the socket id for the server socket. If not in
++     * daemon mode, this will be uninitialized.
++     */
++    private static int sock;
++    /**
++     * IF we are in {@link #IS_DAEMON daemon mode} this will be set to the {@link Path} created from {@link #SOCK_FILE}
++     * relative to the PWD of the server. If not in daemon mode, this will be {@code null}.
++     */
++    private static @Nullable Path sockFile = null;
 +
 +    private static boolean initCalled = false;
 +
@@ -316,7 +339,7 @@ index 0000000000000000000000000000000000000000..9a816a65719e15625621d4789841490f
 +            return false;
 +        }
 +
-+        final Path sockFile = Paths.get(SOCK_FILE);
++        sockFile = Paths.get(SOCK_FILE);
 +        if (Files.exists(sockFile)) {
 +            System.out.println("ERROR: Socket file already exists: " + sockFile.toAbsolutePath());
 +            System.out.println("    This file must not already exist in daemon mode.");
@@ -335,9 +358,8 @@ index 0000000000000000000000000000000000000000..9a816a65719e15625621d4789841490f
 +            .setNameFormat("paperd-Message-Response-Handler-%d")
 +            .build());
 +
-+        final int sock = createSocket(sockFile);
-+        startListening(sock);
-+        registerShutdownHook(sock, sockFile);
++        createSocket();
++        startListening();
 +
 +        // When running as a daemon, we won't have stdout, stderr, and stdin
 +        // If we leave this around as normal then that will cause crashes elsewhere,
@@ -369,81 +391,101 @@ index 0000000000000000000000000000000000000000..9a816a65719e15625621d4789841490f
 +    }
 +
 +    /**
-+     * Registers a {@link Runtime#addShutdownHook(Thread) shutdown hook} to clean up all of the {@code paperd} handler
-+     * resources at shutdown. This will stop all handler threads and shutdown all executors before finally closing the
-+     * socket. Unix sockets are cleaned up after the process which owns it ends, so it's not a big deal if we are killed
-+     * and don't get a chance to do this, but it's still good practice.
-+     *
-+     * @param sock The socket to close
++     * Cleans up all of the {@code paperd} handler resources. This will stop all handler threads and shutdown all
++     * executors before finally closing the socket. Unix sockets are cleaned up after the process which owns it ends,
++     * so it's not a big deal if we are killed and don't get a chance to do this, but it's still good practice.
 +     */
-+    private static void registerShutdownHook(final int sock, final Path sockFile) {
-+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-+            isShuttingDown = true;
++    public static void shutdown() {
++        isShuttingDown = true;
 +
-+            // Finish processing any current messages and stop accepting new messages
++        // Finish processing any current messages and stop accepting new messages
++        final ExecutorService messageResponseHandlerService = PaperDaemon.messageResponseHandlerService;
++        PaperDaemon.messageResponseHandlerService = null;
++
++        if (messageResponseHandlerService == null) {
++            return;
++        } else {
 +            messageResponseHandlerService.shutdown();
++        }
 +
-+            // Tell the message receiver loop it should quit
-+            final Thread mThread = messageThread;
-+            if (mThread != null) {
-+                mThread.interrupt();
-+                try {
-+                    mThread.join(TimeUnit.SECONDS.toMillis(3));
-+                } catch (final InterruptedException ignored) {
-+                }
++        final Int2ObjectArrayMap<Thread> responseThreads = PaperDaemonMessage.LogsMessage.responseThreads;
++        PaperDaemonMessage.LogsMessage.responseThreads = null;
++        if (responseThreads != null) {
++            for (final Thread thread : responseThreads.values()) {
++                thread.interrupt();
 +            }
++            responseThreads.clear();
++        }
 +
-+            // Wait for any message handlers to finish processing
++        // Tell the message receiver loop it should quit
++        final Thread messageThread = PaperDaemon.messageThread;
++        PaperDaemon.messageThread = null;
++        if (messageThread != null) {
++            messageThread.interrupt();
 +            try {
-+                if (!messageResponseHandlerService.awaitTermination(3, TimeUnit.SECONDS)) {
-+                    messageResponseHandlerService.shutdownNow();
-+                }
++                messageThread.join(TimeUnit.SECONDS.toMillis(3));
 +            } catch (final InterruptedException ignored) {
 +            }
++        }
 +
-+            // Shut this down last in case any of the messages needed to use it
++        // Wait for any message handlers to finish processing
++        try {
++            if (!messageResponseHandlerService.awaitTermination(3, TimeUnit.SECONDS)) {
++                messageResponseHandlerService.shutdownNow();
++            }
++        } catch (final InterruptedException ignored) {
++        }
++
++        // Shut this down last in case any of the messages needed to use it
++        final ExecutorService messageSenderService = PaperDaemon.messageSenderService;
++        PaperDaemon.messageSenderService = null;
++        if (messageSenderService != null) {
 +            messageSenderService.shutdown();
++        }
 +
-+            // This part isn't strictly necessary, the OS will clean up after the process closes anyways
-+            // We just do this to be proper
-+            Throwable baseThrown = null;
-+            try {
-+                PaperDaemonJni.closeSocket(sock);
-+            } catch (final NativeErrorException e) {
-+                baseThrown = new PaperDaemonException("Failed to close paperd socket", e);
-+            } catch (final Throwable t) {
-+                baseThrown = t;
-+            }
-+            try {
++        // This part isn't strictly necessary, the OS will clean up after the process closes anyways
++        // We just do this to be proper
++        Throwable baseThrown = null;
++        try {
++            PaperDaemonJni.closeSocket(sock);
++        } catch (final NativeErrorException e) {
++            baseThrown = new PaperDaemonException("Failed to close paperd socket", e);
++        } catch (final Throwable t) {
++            baseThrown = t;
++        }
++        try {
++            final Path sockFile = PaperDaemon.sockFile;
++            if (sockFile != null) {
 +                Files.delete(sockFile);
-+            } catch (final IOException e) {
-+                final Throwable current = new PaperDaemonException("Failed to delete socket file", e);
-+                if (baseThrown != null) {
-+                    baseThrown.addSuppressed(current);
-+                } else {
-+                    baseThrown = current;
-+                }
 +            }
++        } catch (final IOException e) {
++            final Throwable current = new PaperDaemonException("Failed to delete socket file", e);
 +            if (baseThrown != null) {
-+                if (baseThrown instanceof RuntimeException) {
-+                    throw (RuntimeException) baseThrown;
-+                } else {
-+                    throw (Error) baseThrown;
-+                }
++                baseThrown.addSuppressed(current);
++            } else {
++                baseThrown = current;
 +            }
-+        }));
++        }
++        if (baseThrown != null) {
++            if (baseThrown instanceof RuntimeException) {
++                throw (RuntimeException) baseThrown;
++            } else {
++                throw (Error) baseThrown;
++            }
++        }
 +    }
 +
 +    /**
 +     * Create a new socket for communication with {@code paperd} at the given file. Throws a runtime exception on
 +     * failure to cause init to fail if something goes wrong.
-+     *
-+     * @param sockFile The file to create the socket as.
-+     * @return The socket id {@code int} that was created.
 +     */
-+    private static int createSocket(final Path sockFile) {
++    private static void createSocket() {
++        final Path sockFile = PaperDaemon.sockFile;
++        if (sockFile == null) {
++            throw new IllegalStateException("Socket file not set");
++        }
 +        try {
-+            return PaperDaemonJni.createSocket(sockFile);
++            sock = PaperDaemonJni.createSocket(sockFile);
 +        } catch (final NativeErrorException e) {
 +            throw new PaperDaemonException("Failed to create socket for daemon mode at " + sockFile.toAbsolutePath(), e);
 +        }
@@ -453,11 +495,28 @@ index 0000000000000000000000000000000000000000..9a816a65719e15625621d4789841490f
 +     * Begins listening and responding to socket messages. This method will loop forever in a separate
 +     * {@link Thread#setDaemon(boolean) daemon} thread.
 +     */
-+    private static void startListening(final int sock) {
++    private static void startListening() {
 +        messageThread = new Thread(() -> {
 +            while (!Thread.interrupted()) {
 +                try {
-+                    doMessageReceive(sock);
++                    final int clientSock;
++                    try {
++                        clientSock = PaperDaemonJni.acceptConnection(PaperDaemon.sock);
++                    } catch (final NativeTimeoutException e) {
++                        continue;
++                    } catch (final NativeErrorException e) {
++                        log(logger -> logger.log(Level.WARNING, "Failed to accept message from socket", e));
++                        continue;
++                    }
++
++                    if (Thread.interrupted()) {
++                        break;
++                    }
++
++                    final ExecutorService messageResponseHandlerService = PaperDaemon.messageResponseHandlerService;
++                    if (messageResponseHandlerService != null) {
++                        messageResponseHandlerService.submit(new MessageHandler(clientSock));
++                    }
 +                } catch (final Throwable t) {
 +                    log(logger -> logger.log(Level.SEVERE, "Unhandled exception in paperd message receiver", t));
 +                }
@@ -466,25 +525,6 @@ index 0000000000000000000000000000000000000000..9a816a65719e15625621d4789841490f
 +        messageThread.setDaemon(true);
 +        messageThread.setName("paperd-Message-Receiver");
 +        messageThread.start();
-+    }
-+
-+    /**
-+     * Executes a single iteration of the {@link #startListening(int)} thread.
-+     *
-+     * @param sock The socket id to use to listen for messages.
-+     */
-+    /* package */ static void doMessageReceive(final int sock) {
-+        final int clientSock;
-+        try {
-+            clientSock = PaperDaemonJni.acceptConnection(sock);
-+        } catch (final NativeTimeoutException e) {
-+            return;
-+        } catch (final NativeErrorException e) {
-+            log(logger -> logger.log(Level.WARNING, "Failed to accept message from socket", e));
-+            return;
-+        }
-+
-+        messageResponseHandlerService.submit(new MessageHandler(clientSock));
 +    }
 +
 +    /* package */ static final class MessageHandler implements Runnable {
@@ -519,15 +559,20 @@ index 0000000000000000000000000000000000000000..9a816a65719e15625621d4789841490f
 +                    }
 +                }
 +            } finally {
-+                if (PaperDaemon.isShuttingDown && Thread.currentThread().isInterrupted()) {
++                if (PaperDaemon.isShuttingDown) {
 +                    // We're shutting down, tell that to the client
-+                    sendMessage(clientSock, ServerErrorMessage.shuttingDown());
++                    sendMessage(clientSock, ServerErrorMessage.shuttingDown(), false);
 +                }
 +            }
 +        }
 +    }
 +
 +    /* package */ static void handleMessage(final long messageType, final String message, final int clientSock) {
++        final Long2ObjectArrayMap<Class<? extends PaperDaemonMessage>> messageTypeMap = PaperDaemon.messageTypeMap;
++        if (messageTypeMap == null) {
++            return;
++        }
++
 +        final Class<? extends PaperDaemonMessage> clazz = messageTypeMap.get(messageType);
 +        if (clazz == null) {
 +            log(logger -> logger.warning("Unknown message type: " + messageType));
@@ -569,6 +614,8 @@ index 0000000000000000000000000000000000000000..9a816a65719e15625621d4789841490f
 +            if (logError) {
 +                log(logger -> logger.log(Level.WARNING, "Failed to send message to paperd ", e));
 +            }
++            return false;
++        } catch (final NativeSocketClosedException e) {
 +            return false;
 +        }
 +
@@ -787,7 +834,7 @@ index 0000000000000000000000000000000000000000..e10b1e46221d26e256eab9e0f9e5af28
 +}
 diff --git a/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonJni.java b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonJni.java
 new file mode 100644
-index 0000000000000000000000000000000000000000..76b144255d469989fb37839f4bc42259dad4c797
+index 0000000000000000000000000000000000000000..0b0e2e41289334de342516f77832e218ef1a9e90
 --- /dev/null
 +++ b/src/main/java/com/destroystokyo/paper/daemon/PaperDaemonJni.java
 @@ -0,0 +1,98 @@
@@ -885,7 +932,7 @@ index 0000000000000000000000000000000000000000..76b144255d469989fb37839f4bc42259
 +
 +    /* package */ static native PaperDaemonMessageBuffer receiveMessage(final int clientSock) throws NativeErrorException, NativeTimeoutException;
 +
-+    /* package */ static native void sendMessage(final int clientSock, final PaperDaemonMessageBuffer message) throws NativeErrorException;
++    /* package */ static native void sendMessage(final int clientSock, final PaperDaemonMessageBuffer message) throws NativeErrorException, NativeSocketClosedException;
 +
 +    /* package */ static native void closeSocket(final int sock) throws NativeErrorException;
 +}
@@ -1356,12 +1403,14 @@ index 0000000000000000000000000000000000000000..3c88bffdc75f107ccf3b72cb9e17c221
 +    }
 +}
 diff --git a/src/main/java/net/minecraft/server/DedicatedServer.java b/src/main/java/net/minecraft/server/DedicatedServer.java
-index 32cd645abb236b355f4f4f0f810e56342ee6cc06..164d4bb1964e217a6f03872af719afcf8e0c0b79 100644
+index 32cd645abb236b355f4f4f0f810e56342ee6cc06..9e29fc10bc9821379b7dcda8fccc85a775686562 100644
 --- a/src/main/java/net/minecraft/server/DedicatedServer.java
 +++ b/src/main/java/net/minecraft/server/DedicatedServer.java
-@@ -423,7 +423,7 @@ public class DedicatedServer extends MinecraftServer implements IMinecraftServer
+@@ -422,8 +422,9 @@ public class DedicatedServer extends MinecraftServer implements IMinecraftServer
+             //this.remoteStatusListener.b(); // Paper - don't wait for remote connections
          }
  
++        com.destroystokyo.paper.daemon.PaperDaemon.shutdown(); // Paper daemon
          hasFullyShutdown = true; // Paper
 -        System.exit(0); // CraftBukkit
 +        System.exit(com.destroystokyo.paper.daemon.PaperDaemon.shutdownExitCode()); // Paper daemon
@@ -1492,7 +1541,7 @@ index a51202ed53d8ba99b364e8797fe32fa8aeb4fc87..623dd3e13c1d810be08ebadc684f5f54
      }
  }
 diff --git a/src/main/java/org/spigotmc/RestartCommand.java b/src/main/java/org/spigotmc/RestartCommand.java
-index 123de5ac9026508e21cdc225f0962f5c3c46fed5..e072640437c600f9383ce231ef93f896a8f987d3 100644
+index 123de5ac9026508e21cdc225f0962f5c3c46fed5..418a381e84a735c26c2cea6eb4dc4e545ef83d2c 100644
 --- a/src/main/java/org/spigotmc/RestartCommand.java
 +++ b/src/main/java/org/spigotmc/RestartCommand.java
 @@ -47,14 +47,23 @@ public class RestartCommand extends Command
@@ -1545,11 +1594,12 @@ index 123de5ac9026508e21cdc225f0962f5c3c46fed5..e072640437c600f9383ce231ef93f896
  
          } else
          {
-@@ -117,7 +129,7 @@ public class RestartCommand extends Command
+@@ -117,7 +129,8 @@ public class RestartCommand extends Command
  
              // If the server hasn't stopped by now, assume worse case and kill
              closeSocket();
 -            System.exit( 0 );
++            com.destroystokyo.paper.daemon.PaperDaemon.shutdown(); // Paper daemon
 +            System.exit( com.destroystokyo.paper.daemon.PaperDaemon.shutdownExitCode() ); // Paper daemon - use paperd for restart if we are in daemon mode
          }
      }
